@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_CONTEXT = window.APP_CONTEXT || { signedIn: false, version: "0.5.4" };
+const APP_CONTEXT = window.APP_CONTEXT || { signedIn: false, version: "0.5.5" };
 
 const TYPE_META = {
     user: { label: "User", icon: "fa-user" },
@@ -1188,6 +1188,51 @@ function buildTutorialImpactTxt(data) {
         `Findings:`,
         ...findings.map(item => `- [${String(item.severity).toUpperCase()}] ${item.domain}: ${item.name} (${item.impact})`),
     ].join("\n");
+}
+
+function buildTutorialImpactHtml(data) {
+    const summary = data?.summary || {};
+    const group = data?.group || {};
+    const domains = Array.isArray(data?.domains) ? data.domains : [];
+    const executive = getExecutiveDecision(summary);
+    const topEvidence = getTopEvidence(domains, 8);
+    const activeDomains = domains.filter(domain => (domain.count || 0) > 0);
+
+    const evidenceHtml = topEvidence.length
+        ? `<section class="card"><h2>Top Evidence</h2><ul>${topEvidence.map(item => `<li><strong>${escHtml(item.name)}</strong> <span class="muted">${escHtml(item.domainLabel)} • ${escHtml(item.impact)}</span></li>`).join("")}</ul></section>`
+        : "";
+
+    const domainHtml = activeDomains.length
+        ? activeDomains.map(domain => {
+            const findings = (domain.findings || []).map(item => `
+                <tr>
+                    <td>${escHtml(String(item.severity || "warning").toUpperCase())}</td>
+                    <td>${escHtml(item.name || "Unknown")}</td>
+                    <td>${escHtml(formatImpactLabel(item.impact))}</td>
+                </tr>
+            `).join("");
+            return `
+                <section class="domain-card">
+                    <h3>${escHtml(domain.label || domain.key || "Domain")} (${domain.count || 0})</h3>
+                    <table><thead><tr><th>Severity</th><th>Resource</th><th>Impact</th></tr></thead><tbody>${findings}</tbody></table>
+                    <p><strong>Remediation:</strong> ${escHtml(getDomainRemediation(domain.key))}</p>
+                    <p><strong>Owner to contact:</strong> ${escHtml(getDomainOwnerSuggestion(domain.key))}</p>
+                </section>
+            `;
+        }).join("")
+        : "<p>No findings in tutorial sandbox data.</p>";
+
+    return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8" /><title>EntraMap Tutorial Impact Report</title>
+<style>body{font-family:Segoe UI,sans-serif;color:#1f2937;margin:24px;} .card,.domain-card{border:1px solid #dbe3ef;border-radius:12px;padding:16px;margin-bottom:12px;} .muted{color:#6b7280;} table{width:100%;border-collapse:collapse;} td,th{border-bottom:1px solid #e5e7eb;padding:6px;text-align:left;}</style>
+</head><body>
+<h1>EntraMap Tutorial Group Impact Report</h1>
+<p class="muted">Sandbox report generated from tutorial dummy data (v${escHtml(APP_CONTEXT.version || "0.5.5")})</p>
+<section class="card"><h2>Group</h2><p><strong>${escHtml(group.displayName || "Tutorial group")}</strong></p><p>${escHtml(group.id || "")}</p></section>
+<section class="card"><h2>Executive Decision: ${escHtml(executive.title)}</h2><p>${escHtml(executive.detail)}</p><p>${escHtml(summary.recommendation || "")}</p></section>
+${evidenceHtml}
+<section class="card"><h2>Domain Findings</h2>${domainHtml}</section>
+</body></html>`;
 }
 
 function downloadTutorialFile(content, fileName, mimeType, successMessage) {
@@ -3727,6 +3772,56 @@ async function exportGroupImpactTxt(groupId) {
     }
 }
 
+async function exportGroupImpactHtml(groupId) {
+    if (!groupId) return;
+    if (String(groupId || "").startsWith("tutorial-")) {
+        const data = getTutorialImpactResult(groupId);
+        if (!data) return;
+        const safeName = String(data?.group?.displayName || groupId)
+            .replace(/[^a-z0-9\-_]+/gi, "_")
+            .replace(/^_+|_+$/g, "")
+            .slice(0, 80) || "group";
+        downloadTutorialFile(buildTutorialImpactHtml(data), `entramap-impact-${safeName}-${Date.now()}.html`, "text/html;charset=utf-8;", "Tutorial impact HTML exported");
+        return;
+    }
+    try {
+        const response = await fetch(`/api/impact/group/${groupId}/html`);
+        if (!response.ok) {
+            let errorText = "HTML export failed";
+            try {
+                const data = await response.json();
+                errorText = data?.error || errorText;
+            } catch (_) {
+            }
+            showToast(errorText, "error");
+            return;
+        }
+
+        const content = await response.text();
+        const metaResponse = await fetch(`/api/impact/group/${groupId}`);
+        const meta = await metaResponse.json();
+        const groupName = String(meta?.group?.displayName || groupId);
+
+        const safeName = groupName
+            .replace(/[^a-z0-9\-_]+/gi, "_")
+            .replace(/^_+|_+$/g, "")
+            .slice(0, 80) || "group";
+
+        const blob = new Blob([content], { type: "text/html;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `entramap-impact-${safeName}-${Date.now()}.html`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        showToast("Impact HTML exported", "info");
+    } catch (error) {
+        showToast(`HTML export failed: ${error.message}`, "error");
+    }
+}
+
 function buildDetailRows(type, data) {
     const rows = [];
     const pushRow = (label, value, mono = false) => {
@@ -3812,6 +3907,7 @@ function buildDetailRows(type, data) {
                 <button class="dp-action-btn" type="button" onclick="exportGroupImpactReport('${escHtml(data.id)}')"><i class="fas fa-file-arrow-down"></i> Export impact report</button>
                 <button class="dp-action-btn" type="button" onclick="exportGroupImpactCsv('${escHtml(data.id)}')"><i class="fas fa-file-csv"></i> Export impact CSV</button>
                 <button class="dp-action-btn" type="button" onclick="exportGroupImpactTxt('${escHtml(data.id)}')"><i class="fas fa-file-lines"></i> Export impact TXT</button>
+                <button class="dp-action-btn" type="button" onclick="exportGroupImpactHtml('${escHtml(data.id)}')"><i class="fas fa-file-code"></i> Export impact HTML</button>
                 <button id="btn-load-standard-map" class="dp-action-btn" type="button" onclick="loadStandardGroupMap('${escHtml(data.id)}')"><i class="fas fa-sitemap"></i> Load standard graph</button>
                 <button id="btn-load-impact-map" class="dp-action-btn" type="button" onclick="loadGroupImpactMap('${escHtml(data.id)}')"><i class="fas fa-project-diagram"></i> Load impact graph</button>
                 <button class="dp-action-btn" type="button" onclick="compareGroupMaps('${escHtml(data.id)}')"><i class="fas fa-code-compare"></i> Compare maps</button>
@@ -3934,6 +4030,7 @@ window.compareGroupMaps = compareGroupMaps;
 window.exportGroupImpactReport = exportGroupImpactReport;
 window.exportGroupImpactCsv = exportGroupImpactCsv;
 window.exportGroupImpactTxt = exportGroupImpactTxt;
+window.exportGroupImpactHtml = exportGroupImpactHtml;
 
 function exportCurrentGraph() {
     if (!lastGraphData) {

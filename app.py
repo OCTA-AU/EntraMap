@@ -14,7 +14,7 @@ import os
 import logging
 from html import escape
 from pathlib import Path
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from urllib.parse import urlparse
 
@@ -280,6 +280,349 @@ def render_group_impact_txt(result: dict) -> str:
         lines.append("No linked resources found in currently readable domains.")
 
     return "\n".join(lines)
+
+
+_DOMAIN_REMEDIATION = {
+    "conditional_access": "Review include/exclude scopes and replace this group in CA policies before deletion.",
+    "intune_apps": "Reassign Intune app targets to a replacement group and verify assignment intent.",
+    "enterprise_apps": "Move enterprise app role assignments to a successor group or service principal mapping.",
+    "iam_roles": "Remove directory role assignments from this group or transfer them to a least-privileged replacement.",
+    "pim_roles": "Migrate PIM eligibility/active role assignments to a replacement identity path.",
+    "administrative_units": "Remove this group from Administrative Units or update AU scope design.",
+    "group_nesting": "Flatten or rewire nested group chains to avoid inherited dependency breakage.",
+    "group_licensing": "Reassign group-based licenses before deletion to prevent license loss.",
+    "entitlement_management": "Update access package assignment policies to remove references to this group.",
+    "m365_workloads": "Validate Teams/SharePoint/Planner ownership and move workload ownership first.",
+    "exchange_workloads": "Validate mailbox, conversations, and calendar dependencies in Exchange workloads.",
+}
+
+_DOMAIN_OWNERS = {
+    "conditional_access": "Identity Security Team",
+    "intune_apps": "Endpoint Management Team",
+    "enterprise_apps": "Application Owners + IAM Team",
+    "iam_roles": "Privileged Access / IAM Team",
+    "pim_roles": "Privileged Access / IAM Team",
+    "administrative_units": "Directory Governance Team",
+    "group_nesting": "Identity Governance Team",
+    "group_licensing": "Licensing Operations Team",
+    "entitlement_management": "Identity Governance Team",
+    "m365_workloads": "M365 Collaboration Team",
+    "exchange_workloads": "Exchange Admin Team",
+}
+
+
+def _format_impact_label(value: str) -> str:
+    raw = str(value or "linked").strip().replace("_", " ").replace("-", " ").lower()
+    labels = {
+        "included scope": "Included scope",
+        "excluded scope": "Excluded scope",
+        "app role assignment": "App role assignment",
+        "role assignment": "Directory role assignment",
+        "eligible role assignment": "PIM eligibility",
+        "active pim assignment": "Active PIM assignment",
+        "administrative unit member": "Administrative Unit member",
+        "member of group": "Nested in parent group",
+        "contains group": "Contains nested group",
+        "group license assignment": "Group-based license",
+        "entitlement policy scope": "Entitlement policy scope",
+    }
+    if raw in labels:
+        return labels[raw]
+    return raw.title() if raw else "Linked"
+
+
+def _get_executive_decision(summary: dict) -> dict:
+    level = str(summary.get("riskLevel") or "safe")
+    if level == "blocked":
+        return {
+            "title": "No-Go: Block Delete",
+            "class_name": "blocked",
+            "detail": "Blocking dependencies exist. Resolve blockers before deletion.",
+        }
+    if level == "caution":
+        return {
+            "title": "Conditional Go",
+            "class_name": "partial",
+            "detail": "Proceed only after remediating warnings and validating constrained domains.",
+        }
+    return {
+        "title": "Go",
+        "class_name": "safe",
+        "detail": "No direct blockers detected in checked domains.",
+    }
+
+
+def _get_top_evidence(domains: list, limit: int = 8) -> list:
+    evidence = []
+    for domain in domains:
+        label = domain.get("label") or domain.get("key") or "Domain"
+        for item in domain.get("findings", []) if isinstance(domain.get("findings"), list) else []:
+            evidence.append({
+                "domain_label": label,
+                "severity": str(item.get("severity") or "warning"),
+                "impact": _format_impact_label(item.get("impact")),
+                "name": item.get("name") or "Unknown",
+                "id": item.get("id") or "",
+            })
+
+    def severity_rank(value: str) -> int:
+        return 0 if value == "blocker" else 1
+
+    evidence.sort(key=lambda item: (severity_rank(item["severity"]), item["domain_label"], item["name"]))
+    return evidence[:limit]
+
+
+def render_group_impact_html(result: dict) -> str:
+    """Render group impact payload to a CAB-ready printable HTML report."""
+    summary = result.get("summary", {}) or {}
+    group = result.get("group", {}) or {}
+    domains = result.get("domains", []) if isinstance(result.get("domains"), list) else []
+    completeness = summary.get("completeness", {}) or {}
+    executive = _get_executive_decision(summary)
+    top_evidence = _get_top_evidence(domains, 8)
+    constrained = completeness.get("constrainedDomains", []) if isinstance(completeness.get("constrainedDomains"), list) else []
+
+    sorted_domains = sorted(domains, key=lambda domain: int(domain.get("count") or 0), reverse=True)
+    active_domains = [domain for domain in sorted_domains if int(domain.get("count") or 0) > 0]
+    partial_domains = [domain for domain in sorted_domains if domain.get("status") and domain.get("status") != "ok"]
+
+    generated_at = summary.get("checkedAt") or datetime.now(timezone.utc).isoformat()
+    group_name = escape(str(group.get("displayName") or "Unknown group"))
+    group_id = escape(str(group.get("id") or ""))
+    risk_label = escape(str(summary.get("riskLabel") or summary.get("riskLevel") or "Unknown"))
+    recommendation = escape(str(summary.get("recommendation") or "No recommendation available."))
+
+    def render_findings(domain: dict) -> str:
+        findings = domain.get("findings", []) if isinstance(domain.get("findings"), list) else []
+        if not findings:
+            return "<p class=\"muted\">No findings recorded.</p>"
+        rows = []
+        for item in findings:
+            severity = escape(str(item.get("severity") or "warning").upper())
+            name = escape(str(item.get("name") or "Unknown"))
+            impact = escape(_format_impact_label(item.get("impact")))
+            finding_id = escape(str(item.get("id") or ""))
+            rows.append(
+                f"<tr class=\"sev-{severity.lower()}\">"
+                f"<td><span class=\"badge\">{severity}</span></td>"
+                f"<td>{name}</td>"
+                f"<td>{impact}</td>"
+                f"<td class=\"mono\">{finding_id}</td>"
+                f"</tr>"
+            )
+        return (
+            "<table class=\"findings\">"
+            "<thead><tr><th>Severity</th><th>Resource</th><th>Impact</th><th>Object ID</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+        )
+
+    domain_sections = []
+    for domain in active_domains:
+        key = str(domain.get("key") or "")
+        label = escape(str(domain.get("label") or key or "Domain"))
+        count = int(domain.get("count") or 0)
+        remediation = escape(_DOMAIN_REMEDIATION.get(key, "Review this domain and replace or remove references before deleting the group."))
+        owner = escape(_DOMAIN_OWNERS.get(key, "Identity Operations Team"))
+        domain_sections.append(
+            f"""
+            <section class="domain-card">
+                <div class="domain-head">
+                    <h3>{label}</h3>
+                    <span class="count">{count} finding(s)</span>
+                </div>
+                {render_findings(domain)}
+                <p><strong>Remediation:</strong> {remediation}</p>
+                <p><strong>Owner to contact:</strong> {owner}</p>
+            </section>
+            """
+        )
+
+    if not domain_sections:
+        domain_sections.append('<p class="muted">No direct blockers or warnings were detected for this group in the checked domains.</p>')
+
+    evidence_html = ""
+    if top_evidence:
+        evidence_items = "".join(
+            f"<li><strong>{escape(item['name'])}</strong> "
+            f"<span class=\"muted\">{escape(item['domain_label'])} • {escape(item['impact'])}</span></li>"
+            for item in top_evidence
+        )
+        evidence_html = f"<section class=\"card\"><h2>Top Evidence</h2><ul class=\"evidence\">{evidence_items}</ul></section>"
+
+    constrained_html = ""
+    if constrained:
+        constrained_items = "".join(
+            f"<li><strong>{escape(str(item.get('label') or item.get('key') or 'Domain'))}</strong> "
+            f"<span class=\"muted\">{escape(str(item.get('reason') or 'Limited by permissions or API constraints.'))}</span></li>"
+            for item in constrained
+        )
+        constrained_html = f"<section class=\"card warn\"><h2>Constrained Domains</h2><ul>{constrained_items}</ul></section>"
+
+    partial_html = ""
+    if partial_domains:
+        partial_items = "".join(
+            f"<li><strong>{escape(str(domain.get('label') or domain.get('key') or 'Domain'))}</strong> "
+            f"<span class=\"muted\">{escape(str(domain.get('details') or 'Could not be fully read.'))}</span></li>"
+            for domain in partial_domains
+        )
+        partial_html = f"<section class=\"card warn\"><h2>Access Limitations</h2><ul>{partial_items}</ul></section>"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EntraMap Group Impact Report - {group_name}</title>
+  <style>
+    :root {{
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #dbe3ef;
+      --brand: #2563eb;
+      --safe: #15803d;
+      --partial: #b45309;
+      --blocked: #b91c1c;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.45;
+    }}
+    .wrap {{ max-width: 980px; margin: 0 auto; padding: 28px 20px 48px; }}
+    .header, .card, .domain-card {{
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px 22px;
+      margin-bottom: 16px;
+    }}
+    .header h1 {{ margin: 0 0 6px; font-size: 1.55rem; }}
+    .meta {{ color: var(--muted); font-size: 0.92rem; }}
+    .exec {{ border-left: 5px solid var(--brand); }}
+    .exec.safe {{ border-left-color: var(--safe); }}
+    .exec.partial {{ border-left-color: var(--partial); }}
+    .exec.blocked {{ border-left-color: var(--blocked); }}
+    .kpis {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }}
+    .kpi {{
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: #fafcff;
+    }}
+    .kpi span {{ display: block; color: var(--muted); font-size: 0.82rem; }}
+    .kpi strong {{ font-size: 1.2rem; }}
+    h2 {{ margin: 0 0 10px; font-size: 1.05rem; }}
+    h3 {{ margin: 0; font-size: 1rem; }}
+    .domain-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 10px;
+    }}
+    .count {{
+      background: #eef2ff;
+      color: #3730a3;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }}
+    table.findings {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      margin: 8px 0 12px;
+    }}
+    table.findings th, table.findings td {{
+      border-bottom: 1px solid var(--line);
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }}
+    .badge {{
+      display: inline-block;
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      background: #fee2e2;
+      color: #991b1b;
+    }}
+    .sev-warning .badge {{ background: #fef3c7; color: #92400e; }}
+    .sev-info .badge {{ background: #e0f2fe; color: #075985; }}
+    .mono {{ font-family: Consolas, "Courier New", monospace; font-size: 0.8rem; word-break: break-all; }}
+    .muted {{ color: var(--muted); }}
+    ul {{ margin: 8px 0 0; padding-left: 20px; }}
+    .evidence li {{ margin-bottom: 6px; }}
+    .footer {{
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }}
+    @media print {{
+      body {{ background: #fff; }}
+      .wrap {{ max-width: none; padding: 0; }}
+      .header, .card, .domain-card {{ break-inside: avoid; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="header">
+      <h1>EntraMap Group Deletion Impact Report</h1>
+      <div class="meta">
+        Generated by EntraMap v{escape(Config.VERSION)} • {escape(generated_at)} UTC<br />
+        Read-only analysis for change advisory / governance review
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Group</h2>
+      <p><strong>{group_name}</strong></p>
+      <p class="mono">{group_id}</p>
+    </section>
+
+    <section class="card exec {escape(executive['class_name'])}">
+      <h2>Executive Decision: {escape(executive['title'])}</h2>
+      <p>{escape(executive['detail'])}</p>
+      <p><strong>Delete recommendation:</strong> {risk_label} ({escape(str(summary.get('riskScore', '')))})</p>
+      <p>{recommendation}</p>
+      <div class="kpis">
+        <div class="kpi"><span>Blockers</span><strong>{escape(str(summary.get('blockers', 0)))}</strong></div>
+        <div class="kpi"><span>Warnings</span><strong>{escape(str(summary.get('warnings', 0)))}</strong></div>
+        <div class="kpi"><span>Domains hit</span><strong>{escape(str(summary.get('domainsWithHits', 0)))}/{escape(str(summary.get('domainsChecked', 0)))}</strong></div>
+        <div class="kpi"><span>Coverage</span><strong>{escape(str(summary.get('coverageScore', 0)))}%</strong></div>
+        <div class="kpi"><span>Confidence</span><strong>{escape(str(summary.get('confidence', 'low')))}</strong></div>
+      </div>
+    </section>
+
+    {evidence_html}
+    {constrained_html}
+    {partial_html}
+
+    <section class="card">
+      <h2>Domain Findings</h2>
+      {''.join(domain_sections)}
+    </section>
+
+    <p class="footer">
+      This report is generated from delegated Microsoft Graph read permissions available to the signed-in operator.
+      Validate all findings in Entra ID before executing a delete action. EntraMap is open source and provided without warranty.
+    </p>
+  </div>
+</body>
+</html>"""
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -563,7 +906,9 @@ def permission_check():
     })
 
 
-
+@app.route("/api/health")
+def health():
+    """Lightweight health endpoint for smoke checks and monitoring."""
     is_valid, err = Config.validate()
     return jsonify({
         "status": "ok" if is_valid else "warning",
@@ -800,6 +1145,19 @@ def group_impact_txt(group_id):
 
     payload = render_group_impact_txt(result)
     return Response(payload, mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/api/impact/group/<group_id>/html")
+@login_required
+def group_impact_html(group_id):
+    token = auth_engine.get_token(session)
+    result, error = GroupImpactEngine.build(group_id, token)
+
+    if error:
+        return jsonify(error), error.get("status", 404)
+
+    payload = render_group_impact_html(result)
+    return Response(payload, mimetype="text/html; charset=utf-8")
 
 
 @app.route("/api/debug/group-impact/<group_id>")

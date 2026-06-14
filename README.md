@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Version 0.5.4
+Version 0.5.5
 
 EntraMap is a Flask web application that signs users in with Microsoft Entra ID and visualizes tenant relationships as an interactive graph. It helps you explore users, devices, groups, applications, and Conditional Access policies from a single screen.
 
@@ -28,6 +28,7 @@ EntraMap is a Flask web application that signs users in with Microsoft Entra ID 
 - JSON export of the current graph for reporting and handover
 - CSV export of group impact analysis for governance and CAB workflows
 - Plain TXT export of group impact findings for quick change/CAB handover notes
+- CAB-ready HTML export of group impact findings for printable change-board packages
 - Impact graph projection from group findings for visual dependency mapping
 - Impact graph domain/severity styling and one-click standard/impact map toggle
 - Impact graph toolbar filters, domain chips, and filtered-view JSON export
@@ -39,10 +40,22 @@ EntraMap is a Flask web application that signs users in with Microsoft Entra ID 
 - Step-by-step tutorial coach overlay with highlighted click targets, directional callouts, and required actions
 - Tutorial sandbox mode with dummy search results, dummy graph data, and dummy compare output for safe onboarding drills
 - Reusable PowerShell smoke-check script for homepage, health endpoint, and social preview validation
+- Reusable Bash smoke-check script for Linux/macOS and CI validation
 - Read-only deep links to Entra portal object pages
 - Frontend onboarding tabs embedded in the authentication popup (Sign In, Features, How To Use, API Permissions, Changelog)
 - In-app changelog rendered directly from `LOG.md`
 - Idle session timeout warning with 60-second countdown before auto sign-out
+
+## Latest Changes (0.5.5)
+
+- Bumped application version to 0.5.5
+- Added CAB-ready HTML export for group impact analysis via `/api/impact/group/<group_id>/html`
+- Added Export impact HTML action in the group detail panel for one-click change-board handover
+- Restored `/api/health` endpoint for monitoring and smoke validation
+- Added Bash smoke-check script (`scripts/smoke-check.sh`) for Linux/macOS and CI usage
+- Added pre-deploy smoke validation step to GitHub Actions workflow
+- Added screenshots capture guide under `screenshots/README.md`
+- Updated release documentation in README.md, FILES.md, and LOG.md for version consistency
 
 ## Latest Changes (0.5.4)
 
@@ -200,6 +213,19 @@ If the app is already running, use:
 
 ```powershell
 ./scripts/smoke-check.ps1 -NoStart
+```
+
+Linux/macOS smoke check:
+
+```bash
+chmod +x scripts/smoke-check.sh
+./scripts/smoke-check.sh
+```
+
+If the app is already running:
+
+```bash
+NO_START=1 ./scripts/smoke-check.sh http://127.0.0.1:5000
 ```
 
 6. Open:

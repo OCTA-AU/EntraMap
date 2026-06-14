@@ -33,9 +33,41 @@ jobs:
             !__pycache__/
             !*.pyc
 
-  deploy:
+  validate:
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: python-app
+          path: .
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run smoke check
+        env:
+          CLIENT_ID: smoke-test-client
+          CLIENT_SECRET: smoke-test-secret
+          FLASK_SECRET_KEY: smoke-test-secret-key
+          FLASK_DEBUG: "false"
+          NO_START: "0"
+        run: |
+          chmod +x scripts/smoke-check.sh
+          scripts/smoke-check.sh http://127.0.0.1:5000
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: validate
     permissions:
       id-token: write #This is required for requesting the JWT
       contents: read #This is required for actions/checkout

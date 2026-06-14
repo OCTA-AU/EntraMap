@@ -85,7 +85,7 @@ class Config:
     ]
 
     # App
-    VERSION = "0.5.4"
+    VERSION = "0.5.5"
 
     @classmethod
     def validate(cls) -> Tuple[bool, str]:

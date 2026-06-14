@@ -1,5 +1,16 @@
 # Change Log
 
+## 0.5.5 - 2026-06-13
+
+- Bumped application version to 0.5.5
+- Added CAB-ready HTML export for group impact analysis at `/api/impact/group/<group_id>/html`
+- Added Export impact HTML action in group detail panel for printable change-board handover
+- Restored `/api/health` endpoint for monitoring, frontend checks, and smoke validation
+- Added Bash smoke-check script (`scripts/smoke-check.sh`) for Linux/macOS and CI environments
+- Added pre-deploy smoke validation job to GitHub Actions workflow
+- Added screenshots capture guide under `screenshots/README.md`
+- Updated release documentation in README.md, FILES.md, and LOG.md for version consistency
+
 ## 0.5.4 - 2026-05-07
 
 - Bumped application version to 0.5.4

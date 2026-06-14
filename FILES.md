@@ -1,6 +1,6 @@
 # Files Reference
 
-Version 0.5.4
+Version 0.5.5
 
 This file describes the purpose of each file in the repository.
 
@@ -13,6 +13,7 @@ Responsibilities:
 - Initializes Flask app and session configuration
 - Registers authentication, search, details, map, health, and group impact routes
 - Exposes group impact TXT export route at `/api/impact/group/<group_id>/txt`
+- Exposes group impact HTML export route at `/api/impact/group/<group_id>/html`
 - Exposes group impact graph route at `/api/map/group/<group_id>/impact`
 - Exposes group map compare route at `/api/map/group/<group_id>/compare`
 - Loads and renders the signed-out changelog content from `LOG.md`
@@ -38,13 +39,25 @@ Release history and version notes.
 This file. It acts as a file inventory and quick project reference.
 
 ### scripts/smoke-check.ps1
-Operational smoke validation script.
+Operational smoke validation script for Windows/PowerShell.
 
 Responsibilities:
 - Optionally starts the Flask app for validation and stops it afterwards
 - Verifies homepage response and OG social preview metadata
 - Verifies `/api/health` response availability and payload shape
 - Verifies static social preview asset availability (`/static/brand/social-preview.png`)
+
+### scripts/smoke-check.sh
+Operational smoke validation script for Linux/macOS and CI.
+
+Responsibilities:
+- Optionally starts the Flask app for validation and stops it afterwards
+- Verifies homepage response and OG social preview metadata
+- Verifies `/api/health` response availability and payload shape
+- Verifies static social preview asset availability (`/static/brand/social-preview.png`)
+
+### screenshots/README.md
+Guide for capturing and maintaining README screenshot assets.
 
 ## Templates
 
