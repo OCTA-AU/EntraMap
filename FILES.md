@@ -1,6 +1,6 @@
 # Files Reference
 
-Version 0.5.5
+Version 0.5.6
 
 This file describes the purpose of each file in the repository.
 

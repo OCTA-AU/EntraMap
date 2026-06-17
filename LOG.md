@@ -1,5 +1,13 @@
 # Change Log
 
+## 0.5.6 - 2026-06-17
+
+- Bumped application version to 0.5.6
+- Fixed CAB HTML export showing raw Graph BadRequest JSON in coverage sections
+- HTML impact reports now use the same friendly access/limitation wording as the in-app Impact panel
+- Merged duplicate constrained/access limitation sections into one Coverage Limitations block
+- Updated release documentation in README.md, FILES.md, and LOG.md for version consistency
+
 ## 0.5.5 - 2026-06-13
 
 - Bumped application version to 0.5.5

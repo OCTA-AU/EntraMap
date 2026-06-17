@@ -11,6 +11,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 import os
+import json
 import logging
 from html import escape
 from pathlib import Path
@@ -331,6 +332,86 @@ def _format_impact_label(value: str) -> str:
     return raw.title() if raw else "Linked"
 
 
+def _get_permission_hint_for_domain(domain: dict) -> str:
+    key = str(domain.get("key") or "")
+    status = str(domain.get("status") or "")
+    if status == "not_licensed":
+        return "Feature is unavailable in this tenant (license or service plan required)"
+    hints = {
+        "intune_apps": "Needs DeviceManagementApps.Read.All consent and Intune read visibility",
+        "conditional_access": "Needs Policy.Read.All consent and a role that can read CA policies",
+        "enterprise_apps": "Needs Application.Read.All consent and directory app read visibility",
+        "iam_roles": "Needs RoleManagement.Read.Directory consent and directory role visibility",
+        "pim_roles": "Needs RoleManagement.Read.Directory consent and directory role visibility",
+        "administrative_units": "Needs AdministrativeUnit.Read.All consent and AU read visibility",
+        "group_nesting": "Needs Group.Read.All consent and group read visibility",
+        "group_licensing": "Needs Group.Read.All and Organization.Read.All visibility for license resolution",
+        "entitlement_management": "Needs EntitlementManagement.Read.All consent and governance read visibility",
+        "m365_workloads": "Needs Team.ReadBasic.All, Sites.Read.All, Tasks.Read and workload visibility",
+        "exchange_workloads": "Needs group mailbox/calendar visibility in Exchange workloads",
+    }
+    return hints.get(key, "Check Graph consent and signed-in role visibility")
+
+
+def _parse_error_detail_text(raw_details: str) -> str:
+    raw = str(raw_details or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith("{"):
+        return raw
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+    err_obj = parsed.get("error")
+    if isinstance(err_obj, dict):
+        return str(err_obj.get("message") or err_obj.get("code") or raw)
+    if isinstance(err_obj, str):
+        inner_msg = parsed.get("message")
+        if inner_msg:
+            inner_text = str(inner_msg).strip()
+            if inner_text.startswith("{"):
+                try:
+                    inner = json.loads(inner_text)
+                    return str(inner.get("Message") or inner.get("message") or inner_msg)
+                except json.JSONDecodeError:
+                    return str(inner_msg)
+            return str(inner_msg)
+        return err_obj
+    return raw
+
+
+def _get_domain_access_reason(domain: dict) -> str:
+    """Mirror frontend getDomainAccessReason() for CAB-friendly HTML output."""
+    raw_details = str(domain.get("details") or domain.get("reason") or "").strip()
+    fallback = _get_permission_hint_for_domain(domain)
+    if not raw_details:
+        return fallback
+
+    detail_text = _parse_error_detail_text(raw_details)
+    detail_lower = detail_text.lower()
+    status = str(domain.get("status") or "")
+
+    unavailable_markers = (
+        "<html",
+        "403 forbidden",
+        "resource not found for the segment",
+        "not found for segment",
+        "tenant does not have a license",
+        "feature is not available",
+    )
+    if status == "not_licensed" or any(marker in detail_lower for marker in unavailable_markers):
+        return "Feature endpoint is unavailable in this tenant (license or service plan required)"
+
+    if status == "no_permission":
+        return fallback
+
+    concise = detail_text[:177] + "..." if len(detail_text) > 180 else detail_text
+    return f"{concise} | {fallback}"
+
+
 def _get_executive_decision(summary: dict) -> dict:
     level = str(summary.get("riskLevel") or "safe")
     if level == "blocked":
@@ -380,7 +461,6 @@ def render_group_impact_html(result: dict) -> str:
     completeness = summary.get("completeness", {}) or {}
     executive = _get_executive_decision(summary)
     top_evidence = _get_top_evidence(domains, 8)
-    constrained = completeness.get("constrainedDomains", []) if isinstance(completeness.get("constrainedDomains"), list) else []
 
     sorted_domains = sorted(domains, key=lambda domain: int(domain.get("count") or 0), reverse=True)
     active_domains = [domain for domain in sorted_domains if int(domain.get("count") or 0) > 0]
@@ -450,22 +530,23 @@ def render_group_impact_html(result: dict) -> str:
         evidence_html = f"<section class=\"card\"><h2>Top Evidence</h2><ul class=\"evidence\">{evidence_items}</ul></section>"
 
     constrained_html = ""
-    if constrained:
-        constrained_items = "".join(
-            f"<li><strong>{escape(str(item.get('label') or item.get('key') or 'Domain'))}</strong> "
-            f"<span class=\"muted\">{escape(str(item.get('reason') or 'Limited by permissions or API constraints.'))}</span></li>"
-            for item in constrained
+    limitation_domains = [
+        domain for domain in partial_domains
+        if domain.get("status") and domain.get("status") != "ok"
+    ]
+    if limitation_domains:
+        limitation_items = "".join(
+            f"<li><strong>{escape(str(domain.get('label') or domain.get('key') or 'Domain'))}</strong> "
+            f"<span class=\"muted\">{escape(_get_domain_access_reason(domain))}</span></li>"
+            for domain in limitation_domains
         )
-        constrained_html = f"<section class=\"card warn\"><h2>Constrained Domains</h2><ul>{constrained_items}</ul></section>"
+        constrained_html = (
+            f"<section class=\"card warn\"><h2>Coverage Limitations</h2>"
+            f"<p class=\"muted\">These domains could not be fully scanned. This does not automatically mean the group is safe to delete.</p>"
+            f"<ul>{limitation_items}</ul></section>"
+        )
 
     partial_html = ""
-    if partial_domains:
-        partial_items = "".join(
-            f"<li><strong>{escape(str(domain.get('label') or domain.get('key') or 'Domain'))}</strong> "
-            f"<span class=\"muted\">{escape(str(domain.get('details') or 'Could not be fully read.'))}</span></li>"
-            for domain in partial_domains
-        )
-        partial_html = f"<section class=\"card warn\"><h2>Access Limitations</h2><ul>{partial_items}</ul></section>"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
